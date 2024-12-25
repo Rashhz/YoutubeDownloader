@@ -5,15 +5,15 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
 import yt_dlp
-
+import threading
 
 DRIVER_PATH = r"\chromedriver.exe" #chromedriver路径
 
 def scrape_youtube(url,scroll_pause_time=2, max_scrolls=10):
     service = Service(DRIVER_PATH)
     driver = webdriver.Chrome(service=service)
-
-    # 打开 YouTube 频道
+    driver.implicitly_wait(10)
+    # 打开 YouTube 搜索页面
     driver.get(url)
     time.sleep(5)
     # 获取视频标题和链接
@@ -39,11 +39,11 @@ def scrape_youtube(url,scroll_pause_time=2, max_scrolls=10):
     return linklist
 
 def writetofile(filepath,videoName,videoUrl):
-    with open(f"{filepath}", "a", encoding="utf-8") as f:
+    with open(f"{filepath}", "a+", encoding="utf-8") as f:
         f.write(f"Title: {videoName}\n")
         f.write(f"URL: {videoUrl}\n")
         f.write("-" * 50 + "\n")
-def download_video_with_audio_yt_dlp(video_url, save_path="downloads"):
+def download_video_with_audio_yt_dlp(video_url, lock, save_path="downloads"):
     ydl_opts = {
         "format": "bestvideo+bestaudio/best",  # 下载最佳视频流和最佳音频流并合并
         "merge_output_format": "mp4",         # 合并后的格式
@@ -52,7 +52,8 @@ def download_video_with_audio_yt_dlp(video_url, save_path="downloads"):
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([video_url])
-
+    with lock:
+        writetofile("DownLoadedVideoList.txt", video["title"], video["url"])
 def read_videos_from_file(file_path):
     videos = []
     with open(file_path, "r", encoding="utf-8") as file:
@@ -73,11 +74,12 @@ def read_videos_from_file(file_path):
                 video = {}
     return videos
 if __name__ == "__main__":
-    url = '待添加的URL'
+    url = 'https://www.youtube.com/channel/X'
     lklist = scrape_youtube(url)
     time.sleep(random.randint(1, 10))
     #载入已下载列表，避免重复下载
-    recordedURLList = []
+    Writinglock , countlock= threading.Lock()
+    recordedURLList ,threads= []
     if os.path.isfile('DownLoadedVideoList.txt'):
         recordedVideoList = read_videos_from_file('DownLoadedVideoList.txt')
         for item in recordedVideoList:
@@ -88,19 +90,26 @@ if __name__ == "__main__":
         retry_count = 0
         max_retries = 3  # 最大重试次数
         #遇到传输错误时重新执行，重传次数不超过3
+        while threading.active_count() > 5: #最大线程数不超过5，超过时等待
+            pass
         while retry_count < max_retries:
             try:
                 if video['url'] not in recordedURLList:
                     print(f'下载进度: 正在下载第{i}个视频: {video["title"]}')
-                    download_video_with_audio_yt_dlp(video["url"])
-                    writetofile("DownLoadedVideoList.txt", video["title"], video["url"])
-                    recordedURLList.append(video['url'])
-                    print(video['url'])
-                    i = i + 1
+                    thread = threading.Thread(target=download_video_with_audio_yt_dlp, args=(video["url"], Writinglock))
+                    threads.append(thread)
+                    thread.start()
+
                 break  # 如果成功，退出内层循环
             except yt_dlp.utils.DownloadError as e:
                 retry_count += 1
                 print(f"下载 {video['title']} 时出错: {e}")
                 print(f"正在重试 ({retry_count}/{max_retries})...")
                 if retry_count == max_retries:
-                    print(f"跳过视频 {video['title']}，重试次数已达上限。")
+                    print(f"跳过视频第{i}个视频： {video['title']}，重试次数已达上限。")
+        recordedURLList.append(video['url'])
+        print(video['url'])
+        i += 1
+    for thread in threads:
+        thread.join()
+    print("下载完成")
